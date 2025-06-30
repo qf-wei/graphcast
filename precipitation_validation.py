@@ -44,6 +44,7 @@ from graphcast import xarray_tree
 from graphcast import gencast
 from graphcast import denoiser
 from graphcast import nan_cleaning
+from graphcast import autoregressive
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -159,6 +160,8 @@ def construct_wrapped_gencast(sampler_config, task_config, denoiser_architecture
         var_to_clean='sea_surface_temperature',
     )
 
+    predictor = autoregressive.Predictor(predictor)
+
     return predictor
 
 
@@ -204,7 +207,19 @@ def run_validation(month: str, num_forecasts: int = 10, max_lead_time_hours: int
     if not dataset_files:
         raise ValueError(f"No datasets found for {month}")
     
-    dataset_file = dataset_files[0]
+    dataset_1deg = [f for f in dataset_files if "res-1.0" in f]
+    dataset_025deg = [f for f in dataset_files if "res-0.25" in f]
+    
+    if dataset_1deg:
+        dataset_file = dataset_1deg[0]
+        logger.info(f"Using 1.0deg dataset to match 1deg model: {dataset_file}")
+    elif dataset_025deg:
+        dataset_file = dataset_025deg[0]
+        logger.info(f"Using 0.25deg dataset (may cause shape mismatch): {dataset_file}")
+    else:
+        dataset_file = dataset_files[0]
+        logger.info(f"Using first available dataset: {dataset_file}")
+    
     dataset = load_dataset(gcs_bucket, dataset_file)
     
     if "total_precipitation_12hr" not in dataset.data_vars:
