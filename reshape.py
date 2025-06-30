@@ -102,9 +102,9 @@ class ERA5ToGraphCast:
             ds["total_precipitation"]
             .rolling(time=12, min_periods=12)
             .sum()
-            .rename("total_precipitation_6hr")
+            .rename("total_precipitation_12hr")
         )
-        ds = ds.assign(total_precipitation_6hr=tp12).drop_vars("total_precipitation")
+        ds = ds.assign(total_precipitation_12hr=tp12).drop_vars("total_precipitation")
 
         # ---------- t0,t1,t2 だけ残す ------------------------------------
         wanted = [t0, t1, t2]
