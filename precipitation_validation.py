@@ -175,15 +175,25 @@ def compute_l2_error(predictions: xarray.Dataset, targets: xarray.Dataset, varia
     pred_var = predictions[variable]
     target_var = targets[variable]
     
-    squared_diff = (pred_var - target_var) ** 2
+    pred_data = jnp.array(pred_var.values)
+    target_data = jnp.array(target_var.values)
     
-    l2_error_per_time = jnp.sqrt(squared_diff.mean(dim=['lat', 'lon']))
+    squared_diff = (pred_data - target_data) ** 2
     
-    mean_l2_error = float(l2_error_per_time.mean())
+    spatial_axes = (-2, -1)  # lat, lon dimensions
+    l2_error_per_time = jnp.sqrt(jnp.mean(squared_diff, axis=spatial_axes))
+    
+    mean_l2_error = float(jnp.mean(l2_error_per_time))
     
     logger.info(f"L2 error for {variable}: {mean_l2_error:.6f}")
     
-    return mean_l2_error, l2_error_per_time
+    l2_error_da = xarray.DataArray(
+        l2_error_per_time,
+        dims=pred_var.dims[:-2],  # Remove lat, lon dimensions
+        coords={dim: pred_var.coords[dim] for dim in pred_var.dims[:-2]}
+    )
+    
+    return mean_l2_error, l2_error_da
 
 
 def run_validation(month: str, num_forecasts: int = 10, max_lead_time_hours: int = 120):
