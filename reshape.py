@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import numpy as np
 import xarray as xr
+from graphcast import graphcast
 
 AR_STORE = (
     "gs://gcp-public-data-arco-era5/ar/"
@@ -11,11 +12,6 @@ AR_STORE = (
 )
 
 TARGET_ROOT = Path("generated_graphcast_inputs")
-
-PRESSURE_LEVELS_13 = [
-    50, 100, 150, 200, 250, 300,
-    400, 500, 600, 700, 850, 925, 1000,
-]
 
 PRESSURE_VARS = [
     "u_component_of_wind", "v_component_of_wind", "temperature",
@@ -31,6 +27,7 @@ STATIC_VARS = [
     "land_sea_mask", "geopotential_at_surface",
 ]
 
+PRESSURE_LEVELS_13 = list(graphcast.PRESSURE_LEVELS_WEATHERBENCH_13)
 ALL_VARS = STATIC_VARS + SURFACE_VARS + PRESSURE_VARS
 
 def add_time_features(ds: xr.Dataset) -> xr.Dataset:
@@ -97,16 +94,17 @@ class ERA5ToGraphCast:
         t2 = t0 + np.timedelta64(self.lead_h * 2, "h")
 
         ds = ds.sel(time=slice(t0 - np.timedelta64(11, "h"), t2))
-        ds = ds.sel(level=PRESSURE_LEVELS_13)[ALL_VARS]
+        available_vars = [v for v in ALL_VARS if v in ds.data_vars]
+        ds = ds.sel(level=PRESSURE_LEVELS_13)[available_vars]
 
         # ---------- 12 h 積算降水量 --------------------------------------
         tp12 = (
             ds["total_precipitation"]
             .rolling(time=12, min_periods=12)
             .sum()
-            .rename("total_precipitation_12hr")
+            .rename("total_precipitation_6hr")
         )
-        ds = ds.assign(total_precipitation_12hr=tp12).drop_vars("total_precipitation")
+        ds = ds.assign(total_precipitation_6hr=tp12).drop_vars("total_precipitation")
 
         # ---------- t0,t1,t2 だけ残す ------------------------------------
         wanted = [t0, t1, t2]
@@ -116,6 +114,7 @@ class ERA5ToGraphCast:
 
         # ✅ 相対時間に変換（timedelta64[ns] 型に直す）
         relative_time = ds.time.data - t0
+        ds = ds.assign_coords(time=relative_time)
         ds = ds.assign_coords(datetime=("time", sel))
 
         # ---------- 時間特徴量 ------------------------------------------
