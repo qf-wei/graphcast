@@ -228,6 +228,11 @@ def compute_l2_error(predictions: xarray.Dataset, targets: xarray.Dataset, varia
     
     squared_diff = (pred_data - target_data) ** 2
     
+    logger.info(f"pred_data shape: {pred_data.shape}, target_data shape: {target_data.shape}")
+    logger.info(pred_data)
+    logger.info("" + "="*50)
+    logger.info(target_data)
+    
     spatial_axes = (-2, -1)  # lat, lon dimensions
     l2_error_per_time = jnp.sqrt(jnp.mean(squared_diff, axis=spatial_axes))
     
