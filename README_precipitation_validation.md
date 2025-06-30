@@ -109,6 +109,22 @@ If datasets fail to load:
 - Verify Google Cloud Storage access
 - Try different month (currently only 2019-03 available)
 
+### Shape Mismatch Issues
+If you encounter grid2mesh_gnn shape mismatch errors:
+- The program automatically handles grid dimension mismatches by interpolating to a consistent reference grid
+- Different lead times may cause different spatial sampling, but this is now handled automatically
+- The fix ensures consistent grid dimensions regardless of lead time parameter (12h, 24h, 48h, etc.)
+- If issues persist, try using 1.0deg datasets which better match the 1deg model architecture
+
+### Lead Time Support
+The validation program now supports various lead time values:
+- `--max_lead_time 12`: 12-hour forecasts (default, fastest)
+- `--max_lead_time 24`: 24-hour forecasts 
+- `--max_lead_time 48`: 48-hour forecasts
+- `--max_lead_time 120`: 120-hour forecasts (5 days)
+
+All lead times are automatically handled with consistent grid dimensions to prevent shape mismatch errors.
+
 ## Files
 
 - `precipitation_validation.py`: Main validation program

@@ -235,6 +235,11 @@ def run_validation(month: str, num_forecasts: int = 10, max_lead_time_hours: int
     if "total_precipitation_12hr" not in dataset.data_vars:
         raise ValueError("total_precipitation_12hr not found in dataset")
     
+    reference_grid_lat = dataset.lat
+    reference_grid_lon = dataset.lon
+    reference_grid_nodes = reference_grid_lat.shape[0] * reference_grid_lon.shape[0]
+    logger.info(f"Reference grid dimensions: {reference_grid_lat.shape[0]} lat × {reference_grid_lon.shape[0]} lon = {reference_grid_nodes} nodes")
+    
     @hk.transform_with_state
     def run_forward(inputs, targets_template, forcings):
         predictor = construct_wrapped_gencast(
@@ -275,6 +280,22 @@ def run_validation(month: str, num_forecasts: int = 10, max_lead_time_hours: int
                 target_lead_times=slice("12h", f"{max_lead_time_hours}h"),
                 **dataclasses.asdict(task_config)
             )
+            
+            input_grid_nodes = eval_inputs.lat.shape[0] * eval_inputs.lon.shape[0]
+            target_grid_nodes = eval_targets.lat.shape[0] * eval_targets.lon.shape[0]
+            
+            logger.info(f"Forecast {i+1}: Input grid nodes: {input_grid_nodes}, Target grid nodes: {target_grid_nodes}")
+            
+            if input_grid_nodes != reference_grid_nodes:
+                logger.warning(f"Input grid mismatch: expected {reference_grid_nodes}, got {input_grid_nodes}")
+                eval_inputs = eval_inputs.interp(lat=reference_grid_lat, lon=reference_grid_lon, method='linear')
+                logger.info(f"Interpolated inputs to reference grid: {reference_grid_nodes} nodes")
+            
+            if target_grid_nodes != reference_grid_nodes:
+                logger.warning(f"Target grid mismatch: expected {reference_grid_nodes}, got {target_grid_nodes}")
+                eval_targets = eval_targets.interp(lat=reference_grid_lat, lon=reference_grid_lon, method='linear')
+                eval_forcings = eval_forcings.interp(lat=reference_grid_lat, lon=reference_grid_lon, method='linear')
+                logger.info(f"Interpolated targets and forcings to reference grid: {reference_grid_nodes} nodes")
             
             rng = jax.random.PRNGKey(i)
             predictions = run_forward_jitted(
