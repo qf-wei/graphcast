@@ -307,17 +307,33 @@ def run_validation_cached(month: str, cache_dir: str, num_forecasts: int = 10, m
     dataset_1deg = [f for f in dataset_files if "res-1.0" in f]
     dataset_025deg = [f for f in dataset_files if "res-0.25" in f]
     
+    def get_steps_from_filename(filename):
+        import re
+        match = re.search(r'steps-(\d+)', filename)
+        return int(match.group(1)) if match else 0
+    
     if dataset_1deg:
+        dataset_1deg.sort(key=get_steps_from_filename, reverse=True)
         dataset_file = dataset_1deg[0]
-        logger.info(f"Using 1.0deg dataset to match 1deg model: {dataset_file}")
+        steps = get_steps_from_filename(dataset_file)
+        logger.info(f"Using 1.0deg dataset to match 1deg model: {dataset_file} ({steps} steps)")
     elif dataset_025deg:
+        dataset_025deg.sort(key=get_steps_from_filename, reverse=True)
         dataset_file = dataset_025deg[0]
-        logger.info(f"Using 0.25deg dataset (may cause shape mismatch): {dataset_file}")
+        steps = get_steps_from_filename(dataset_file)
+        logger.info(f"Using 0.25deg dataset (may cause shape mismatch): {dataset_file} ({steps} steps)")
     else:
+        dataset_files.sort(key=get_steps_from_filename, reverse=True)
         dataset_file = dataset_files[0]
-        logger.info(f"Using first available dataset: {dataset_file}")
+        steps = get_steps_from_filename(dataset_file)
+        logger.info(f"Using first available dataset: {dataset_file} ({steps} steps)")
     
     dataset = load_dataset_cached(gcs_bucket, cache_path, dataset_file)
+    
+    min_time_steps_needed = max(5, max_lead_time_hours // 12 + 3)  # Rough estimate
+    if dataset.dims["time"] < min_time_steps_needed:
+        logger.warning(f"Dataset has only {dataset.dims['time']} time steps, but {min_time_steps_needed} recommended for {max_lead_time_hours}h lead time")
+        logger.warning("Consider using a dataset with more time steps for better results with longer lead times")
     
     if "total_precipitation_12hr" not in dataset.data_vars:
         raise ValueError("total_precipitation_12hr not found in dataset")
@@ -326,6 +342,17 @@ def run_validation_cached(month: str, cache_dir: str, num_forecasts: int = 10, m
     reference_grid_lon = dataset.lon
     reference_grid_nodes = reference_grid_lat.shape[0] * reference_grid_lon.shape[0]
     logger.info(f"Reference grid dimensions: {reference_grid_lat.shape[0]} lat × {reference_grid_lon.shape[0]} lon = {reference_grid_nodes} nodes")
+    
+    try:
+        reference_inputs_extracted, reference_targets_extracted, reference_forcings_extracted = data_utils.extract_inputs_targets_forcings(
+            dataset.isel(time=slice(0, 3)),  # Use first 3 time steps
+            target_lead_times=slice("12h", "12h"),  # Use consistent 12h lead time for initialization
+            **dataclasses.asdict(task_config)
+        )
+        logger.info(f"Created reference datasets for consistent model initialization")
+    except Exception as e:
+        logger.error(f"Failed to extract reference data: {e}")
+        raise
     
     @hk.transform_with_state
     def run_forward(inputs, targets_template, forcings):
@@ -336,9 +363,29 @@ def run_validation_cached(month: str, cache_dir: str, num_forecasts: int = 10, m
         )
         return predictor(inputs, targets_template=targets_template, forcings=forcings)
     
-    run_forward_jitted = jax.jit(
-        lambda rng, i, t, f: run_forward.apply(params, state, rng, i, t, f)[0]
+    # Initialize the model with the first forecast to ensure consistent grid dimensions
+    logger.info("Initializing model with consistent grid dimensions...")
+    
+    # Extract the first forecast data using 12h lead time for consistent initialization
+    init_forecast_data = dataset.isel(time=slice(0, min(3, dataset.dims["time"])))
+    init_inputs, init_targets, init_forcings = data_utils.extract_inputs_targets_forcings(
+        init_forecast_data, 
+        target_lead_times=slice("12h", "12h"),  # Always use 12h for initialization
+        **dataclasses.asdict(task_config)
     )
+    
+    rng = hk.PRNGSequence(42)
+    try:
+        # This call will initialize the model with consistent grid dimensions
+        _, base_state = run_forward.init(next(rng), init_inputs, init_targets, init_forcings)
+        logger.info(f"Model initialized successfully with reference grid: {reference_grid_nodes} nodes")
+    except Exception as e:
+        logger.error(f"Failed to initialize model with reference grid: {e}")
+        raise
+    
+    # run_forward_jitted = jax.jit(
+    #     lambda rng, i, t, f: run_forward.apply(params, state, rng, i, t, f)[0]
+    # )
     
     l2_errors = []
     
@@ -355,7 +402,8 @@ def run_validation_cached(month: str, cache_dir: str, num_forecasts: int = 10, m
     for i in range(num_to_run):
         logger.info(f"Running forecast {i+1}/{num_to_run}")
         
-        forecast_data = dataset.isel(time=slice(i, min(i + 10, dataset.dims["time"])))
+        time_steps_needed = max(10, max_lead_time_hours // 6 + 5)
+        forecast_data = dataset.isel(time=slice(i, min(i + time_steps_needed, dataset.dims["time"])))
         
         if forecast_data.dims["time"] < 3:
             logger.warning(f"Skipping forecast {i+1}: insufficient time steps")
@@ -384,13 +432,53 @@ def run_validation_cached(month: str, cache_dir: str, num_forecasts: int = 10, m
                 eval_forcings = eval_forcings.interp(lat=reference_grid_lat, lon=reference_grid_lon, method='linear')
                 logger.info(f"Interpolated targets and forcings to reference grid: {reference_grid_nodes} nodes")
             
-            rng = jax.random.PRNGKey(i)
-            predictions = run_forward_jitted(
-                rng=rng,
-                i=eval_inputs,
-                t=eval_targets * np.nan,  # Use NaN template
-                f=eval_forcings
+            if eval_inputs.dims['time'] == 0:
+                logger.warning(f"Forecast {i+1}: No input time steps available for lead time {max_lead_time_hours}h, skipping")
+                continue
+            
+            if eval_inputs.dims['time'] < 2:
+                logger.info(f"Forecast {i+1}: Insufficient input time steps ({eval_inputs.dims['time']}) for lead time {max_lead_time_hours}h")
+                
+                # Try using all available time steps
+                max_available_steps = dataset.dims["time"] - i
+                if max_available_steps >= 3:
+                    logger.info(f"Forecast {i+1}: Using all available time steps ({max_available_steps}) for longer lead time")
+                    extended_forecast_data = dataset.isel(time=slice(i, dataset.dims["time"]))
+                    eval_inputs, eval_targets, eval_forcings = data_utils.extract_inputs_targets_forcings(
+                        extended_forecast_data, 
+                        target_lead_times=slice("12h", f"{max_lead_time_hours}h"),
+                        **dataclasses.asdict(task_config)
+                    )
+                    
+                    if eval_inputs.dims['time'] < 2:
+                        logger.warning(f"Forecast {i+1}: Still insufficient input time steps ({eval_inputs.dims['time']}), using 12h lead time as fallback")
+                        eval_inputs, eval_targets, eval_forcings = data_utils.extract_inputs_targets_forcings(
+                            extended_forecast_data, 
+                            target_lead_times=slice("12h", "12h"),
+                            **dataclasses.asdict(task_config)
+                        )
+                        if eval_inputs.dims['time'] < 2:
+                            logger.warning(f"Forecast {i+1}: Even 12h fallback failed, skipping")
+                            continue
+                else:
+                    logger.warning(f"Forecast {i+1}: Not enough remaining time steps ({max_available_steps}), skipping")
+                    continue
+            
+            logger.info(f"Forecast {i+1}: Input time steps: {eval_inputs.dims['time']}, Target time steps: {eval_targets.dims['time']}")
+            
+            # Use the base state (no reinitialization needed) to avoid temporal dimension conflicts
+            rng = hk.PRNGSequence(42 + i)  # Different seed for each forecast
+            
+            predictions, _ = run_forward.apply(
+                params, base_state, next(rng), eval_inputs, eval_targets, eval_forcings
             )
+            
+            if predictions.dims.get('batch', 1) != eval_targets.dims.get('batch', 1):
+                logger.info(f"Adjusting batch dimensions: predictions={predictions.dims.get('batch', 1)}, targets={eval_targets.dims.get('batch', 1)}")
+                if 'batch' in predictions.dims and predictions.dims['batch'] > 1:
+                    predictions = predictions.isel(batch=0)
+                if 'batch' in eval_targets.dims and eval_targets.dims['batch'] > 1:
+                    eval_targets = eval_targets.isel(batch=0)
             
             l2_error, _ = compute_l2_error(predictions, eval_targets, "total_precipitation_12hr")
             l2_errors.append(l2_error)
