@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
 """
-Precipitation Validation Program for GraphCast/GenCast on RTX 5090 GPU (with local caching)
+Multi-Variable Validation Program for GraphCast/GenCast on RTX 5090 GPU (with local caching)
 
 This program loads 2019 weather data, runs GenCast inference on RTX 5090 GPU,
-and validates the accuracy of total_precipitation_12hr predictions by computing L2 error
+and validates the accuracy of multiple weather variable predictions by computing L2 error
 against ground truth.
 
 Key Features:
 - Uses GPU-compatible attention configuration (triblockdiag_mha)
 - Loads real 2019 ERA5 weather data from Google Cloud Storage OR local cache
 - LOCAL CACHING: Downloads datasets once and reuses them for faster validation cycles
-- Computes L2 error for precipitation predictions vs ground truth
+- Computes L2 error for multiple weather variable predictions vs ground truth
 - Handles memory efficiently for RTX 5090 GPU inference
-- Provides comprehensive validation statistics
+- Provides comprehensive validation statistics for each variable
 
 Usage:
     python precipitation_validation_with_cache.py --month 2019-03 --num_forecasts 5 --cache_dir ./datasets
     
-    python precipitation_validation_with_cache.py --month 2019-03 --num_forecasts 5 --cache_dir ./datasets
+    # Validate specific variables
+    python precipitation_validation_with_cache.py --month 2019-03 --variables total_precipitation_12hr temperature_2m --num_forecasts 5
+    
+    # Validate all available variables
+    python precipitation_validation_with_cache.py --month 2019-03 --variables all --num_forecasts 5
 
 Requirements:
 - RTX 5090 GPU with CUDA support
@@ -226,12 +230,13 @@ def compute_l2_error(predictions: xarray.Dataset, targets: xarray.Dataset, varia
     pred_data = jnp.array(pred_var.values)
     target_data = jnp.array(target_var.values)
     
+    #save it into numpy arrays
+    np.save(f"predictions_{variable}.npy", pred_data)
+    np.save(f"targets_{variable}.npy", target_data)
+    
     squared_diff = (pred_data - target_data) ** 2
     
-    logger.info(f"pred_data shape: {pred_data.shape}, target_data shape: {target_data.shape}")
-    logger.info(pred_data)
-    logger.info("" + "="*50)
-    logger.info(target_data)
+    logger.debug(f"Computing L2 error for {variable}: pred_data shape: {pred_data.shape}, target_data shape: {target_data.shape}")
     
     spatial_axes = (-2, -1)  # lat, lon dimensions
     l2_error_per_time = jnp.sqrt(jnp.mean(squared_diff, axis=spatial_axes))
@@ -247,6 +252,34 @@ def compute_l2_error(predictions: xarray.Dataset, targets: xarray.Dataset, varia
     )
     
     return mean_l2_error, l2_error_da
+
+
+def get_available_variables(dataset: xarray.Dataset) -> list:
+    """Get list of available variables in the dataset that can be validated."""
+    # Filter out coordinate variables and keep only data variables that could be predictions
+    available_vars = []
+    
+    # Common dimension name patterns for spatial and temporal coordinates
+    lat_dims = ['latitude', 'lat', 'y']
+    lon_dims = ['longitude', 'lon', 'x'] 
+    time_dims = ['time', 'datetime']
+    
+    for var_name in dataset.data_vars:
+        var = dataset[var_name]
+        
+        # Check if variable has spatial dimensions (lat, lon) and time dimension
+        has_lat = any(dim in var.dims for dim in lat_dims)
+        has_lon = any(dim in var.dims for dim in lon_dims)
+        has_time = any(dim in var.dims for dim in time_dims)
+        
+        if has_lat and has_lon and has_time:
+            available_vars.append(var_name)
+            logger.debug(f"Variable {var_name} has required dimensions: {var.dims}")
+        else:
+            logger.debug(f"Skipping variable {var_name}: missing required dimensions. Has: {var.dims}")
+    
+    logger.info(f"Available variables for validation: {available_vars}")
+    return sorted(available_vars)
 
 
 def get_cache_info(cache_dir: Path) -> dict:
@@ -279,11 +312,12 @@ def get_cache_info(cache_dir: Path) -> dict:
     return info
 
 
-def run_validation_cached(month: str, cache_dir: str, num_forecasts: int = 10, max_lead_time_hours: int = 120):
-    """Run precipitation validation with local dataset caching."""
+def run_validation_cached(month: str, cache_dir: str, variables: list = None, num_forecasts: int = 10, max_lead_time_hours: int = 120):
+    """Run multi-variable validation with local dataset caching."""
     cache_path = Path(cache_dir)
     
-    logger.info(f"Starting precipitation validation for {month}")
+    logger.info(f"Starting multi-variable validation for {month}")
+    logger.info(f"Variables to validate: {variables}")
     logger.info(f"Cache directory: {cache_path}")
     logger.info(f"JAX devices available: {jax.local_devices()}")
     
@@ -324,8 +358,32 @@ def run_validation_cached(month: str, cache_dir: str, num_forecasts: int = 10, m
     
     dataset = load_dataset_cached(gcs_bucket, cache_path, dataset_file)
     
-    if "total_precipitation_12hr" not in dataset.data_vars:
-        raise ValueError("total_precipitation_12hr not found in dataset")
+    # Determine which variables to validate
+    available_variables = get_available_variables(dataset)
+    
+    if variables is None or (len(variables) == 1 and variables[0] == "all"):
+        variables_to_validate = available_variables
+        logger.info(f"Validating all available variables: {variables_to_validate}")
+    else:
+        # Check if requested variables are available
+        variables_to_validate = []
+        for var in variables:
+            if var in available_variables:
+                variables_to_validate.append(var)
+            else:
+                logger.warning(f"Variable '{var}' not found in dataset. Available: {available_variables}")
+        
+        if not variables_to_validate:
+            raise ValueError(f"None of the requested variables {variables} found in dataset. Available: {available_variables}")
+        
+        logger.info(f"Validating requested variables: {variables_to_validate}")
+    
+    # Fallback to total_precipitation_12hr if no variables specified and it exists
+    if not variables_to_validate and "total_precipitation_12hr" in available_variables:
+        variables_to_validate = ["total_precipitation_12hr"]
+        logger.info("No variables specified, defaulting to total_precipitation_12hr")
+    elif not variables_to_validate:
+        raise ValueError(f"No variables to validate. Available variables: {available_variables}")
     
     @hk.transform_with_state
     def run_forward(inputs, targets_template, forcings):
@@ -340,13 +398,14 @@ def run_validation_cached(month: str, cache_dir: str, num_forecasts: int = 10, m
         lambda rng, i, t, f: run_forward.apply(params, state, rng, i, t, f)[0]
     )
     
-    l2_errors = []
+    # Initialize results structure for multiple variables
+    variable_results = {var: [] for var in variables_to_validate}
     
     available_forecasts = max(0, dataset.dims["time"] - 2)
     num_to_run = min(num_forecasts, available_forecasts)
     
     logger.info(f"Dataset has {dataset.dims['time']} time steps, can run {available_forecasts} forecasts")
-    logger.info(f"Will run {num_to_run} forecasts")
+    logger.info(f"Will run {num_to_run} forecasts for {len(variables_to_validate)} variables")
     
     if num_to_run == 0:
         logger.error("Not enough time steps in dataset for forecasting (need at least 3)")
@@ -376,60 +435,93 @@ def run_validation_cached(month: str, cache_dir: str, num_forecasts: int = 10, m
                 f=eval_forcings
             )
             
-            l2_error, _ = compute_l2_error(predictions, eval_targets, "total_precipitation_12hr")
-            l2_errors.append(l2_error)
+            # Compute L2 errors for all variables
+            forecast_errors = {}
+            for variable in variables_to_validate:
+                try:
+                    l2_error, _ = compute_l2_error(predictions, eval_targets, variable)
+                    variable_results[variable].append(l2_error)
+                    forecast_errors[variable] = l2_error
+                    logger.info(f"Forecast {i+1} {variable} L2 error: {l2_error:.6f}")
+                except Exception as e:
+                    logger.warning(f"Failed to compute L2 error for {variable} in forecast {i+1}: {e}")
+                    continue
             
-            logger.info(f"Forecast {i+1} L2 error: {l2_error:.6f}")
+            if forecast_errors:
+                logger.info(f"Forecast {i+1} completed for {len(forecast_errors)} variables")
             
         except Exception as e:
             logger.error(f"Error in forecast {i+1}: {e}")
             continue
     
-    if l2_errors:
-        mean_l2 = np.mean(l2_errors)
-        std_l2 = np.std(l2_errors)
-        min_l2 = np.min(l2_errors)
-        max_l2 = np.max(l2_errors)
-        
+    # Check if we have results for any variables
+    successful_variables = {var: errors for var, errors in variable_results.items() if errors}
+    
+    if successful_variables:
         final_cache_info = get_cache_info(cache_path)
         
-        logger.info("=" * 50)
-        logger.info("🌧️  PRECIPITATION VALIDATION RESULTS")
-        logger.info("=" * 50)
+        logger.info("=" * 60)
+        logger.info("🌍  MULTI-VARIABLE VALIDATION RESULTS")
+        logger.info("=" * 60)
         logger.info(f"📅 Month: {month}")
-        logger.info(f"🔢 Number of forecasts: {len(l2_errors)}")
-        logger.info(f"📊 Mean L2 error: {mean_l2:.6f}")
-        logger.info(f"📈 Std L2 error: {std_l2:.6f}")
-        logger.info(f"📉 Min L2 error: {min_l2:.6f}")
-        logger.info(f"📊 Max L2 error: {max_l2:.6f}")
+        logger.info(f"🔢 Number of forecasts: {num_to_run}")
+        logger.info(f"📊 Variables validated: {len(successful_variables)}")
         logger.info(f"🎯 Device used: {'GPU' if gpu_available else 'CPU'}")
         logger.info(f"💾 Cache size: {final_cache_info['total_size_gb']:.1f} GB ({final_cache_info['file_count']} files)")
-        logger.info("=" * 50)
-        logger.info("✅ Validation completed successfully!")
+        logger.info("=" * 60)
         
-        return {
+        # Prepare detailed results
+        detailed_results = {
             "month": month,
-            "num_forecasts": len(l2_errors),
-            "mean_l2_error": mean_l2,
-            "std_l2_error": std_l2,
-            "min_l2_error": min_l2,
-            "max_l2_error": max_l2,
-            "all_l2_errors": l2_errors,
+            "num_forecasts": num_to_run,
+            "variables_validated": list(successful_variables.keys()),
             "device_used": "GPU" if gpu_available else "CPU",
-            "cache_info": final_cache_info
+            "cache_info": final_cache_info,
+            "variable_results": {}
         }
+        
+        # Process results for each variable
+        for variable, errors in successful_variables.items():
+            if errors:
+                mean_l2 = np.mean(errors)
+                std_l2 = np.std(errors)
+                min_l2 = np.min(errors)
+                max_l2 = np.max(errors)
+                
+                logger.info(f"📊 {variable}:")
+                logger.info(f"    Mean L2 error: {mean_l2:.6f}")
+                logger.info(f"    Std L2 error: {std_l2:.6f}")
+                logger.info(f"    Min L2 error: {min_l2:.6f}")
+                logger.info(f"    Max L2 error: {max_l2:.6f}")
+                logger.info(f"    Forecasts: {len(errors)}")
+                
+                detailed_results["variable_results"][variable] = {
+                    "mean_l2_error": mean_l2,
+                    "std_l2_error": std_l2,
+                    "min_l2_error": min_l2,
+                    "max_l2_error": max_l2,
+                    "all_l2_errors": errors,
+                    "num_forecasts": len(errors)
+                }
+        
+        logger.info("=" * 60)
+        logger.info("✅ Multi-variable validation completed successfully!")
+        
+        return detailed_results
     else:
         logger.error("No successful forecasts completed")
         return None
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Validate GenCast precipitation predictions with local caching")
+    parser = argparse.ArgumentParser(description="Validate GenCast multi-variable predictions with local caching")
     parser.add_argument("--month", default="2019-03", help="Month to validate (e.g., 2019-03)")
     parser.add_argument("--num_forecasts", type=int, default=3, help="Number of forecasts to run")
     parser.add_argument("--max_lead_time", type=int, default=120, help="Maximum lead time in hours")
     parser.add_argument("--cache_dir", default="./graphcast_cache", help="Directory for local dataset cache")
     parser.add_argument("--clear_cache", action="store_true", help="Clear cache before running")
+    parser.add_argument("--variables", nargs="+", default=None, 
+                       help="Variables to validate (e.g., total_precipitation_12hr temperature_2m). Use 'all' to validate all available variables. If not specified, defaults to total_precipitation_12hr if available.")
     
     args = parser.parse_args()
     
@@ -438,9 +530,9 @@ def main():
         shutil.rmtree(args.cache_dir)
     
     try:
-        results = run_validation_cached(args.month, args.cache_dir, args.num_forecasts, args.max_lead_time)
+        results = run_validation_cached(args.month, args.cache_dir, args.variables, args.num_forecasts, args.max_lead_time)
         if results:
-            logger.info("Validation completed successfully!")
+            logger.info("Multi-variable validation completed successfully!")
             logger.info(f"💡 Next runs will be faster using cached data in: {args.cache_dir}")
         else:
             logger.error("Validation failed!")
