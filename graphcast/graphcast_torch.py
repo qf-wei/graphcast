@@ -215,7 +215,11 @@ class GraphCast(nn.Module):
                 grid_features = grid_features[:grid_nodes_count]
             else:
                 padding_size = grid_nodes_count - grid_features.shape[0]
-                padding = torch.randn(padding_size, grid_features.shape[-1], requires_grad=True, device=grid_features.device)
+                if grid_features.ndim == 1:
+                    padding = torch.randn(padding_size, requires_grad=True, device=grid_features.device)
+                else:
+                    padding_shape = [padding_size] + list(grid_features.shape[1:])
+                    padding = torch.randn(padding_shape, requires_grad=True, device=grid_features.device)
                 grid_features = torch.cat([grid_features, padding], dim=0)
         
         if grid_features.shape[-1] != self.model_config.latent_size:
