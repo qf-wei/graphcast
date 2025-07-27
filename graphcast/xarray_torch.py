@@ -365,7 +365,14 @@ class TorchArrayWrapper:
     """Addition operator."""
     if isinstance(other, TorchArrayWrapper):
       return TorchArrayWrapper(self.torch_tensor + other.torch_tensor)
-    return TorchArrayWrapper(self.torch_tensor + other)
+    elif isinstance(other, torch.Tensor):
+      return TorchArrayWrapper(self.torch_tensor + other)
+    else:
+      if hasattr(other, '__array__') and not isinstance(other, torch.Tensor):
+        other_tensor = torch.from_numpy(other.__array__()).to(self.torch_tensor.device)
+      else:
+        other_tensor = torch.tensor(other, device=self.torch_tensor.device, dtype=self.torch_tensor.dtype)
+      return TorchArrayWrapper(self.torch_tensor + other_tensor)
   
   def __radd__(self, other):
     """Right addition operator."""
@@ -375,7 +382,14 @@ class TorchArrayWrapper:
     """Subtraction operator."""
     if isinstance(other, TorchArrayWrapper):
       return TorchArrayWrapper(self.torch_tensor - other.torch_tensor)
-    return TorchArrayWrapper(self.torch_tensor - other)
+    elif isinstance(other, torch.Tensor):
+      return TorchArrayWrapper(self.torch_tensor - other)
+    else:
+      if hasattr(other, '__array__') and not isinstance(other, torch.Tensor):
+        other_tensor = torch.from_numpy(other.__array__()).to(self.torch_tensor.device)
+      else:
+        other_tensor = torch.tensor(other, device=self.torch_tensor.device, dtype=self.torch_tensor.dtype)
+      return TorchArrayWrapper(self.torch_tensor - other_tensor)
   
   def __rsub__(self, other):
     """Right subtraction operator."""
@@ -385,7 +399,14 @@ class TorchArrayWrapper:
     """Multiplication operator."""
     if isinstance(other, TorchArrayWrapper):
       return TorchArrayWrapper(self.torch_tensor * other.torch_tensor)
-    return TorchArrayWrapper(self.torch_tensor * other)
+    elif isinstance(other, torch.Tensor):
+      return TorchArrayWrapper(self.torch_tensor * other)
+    else:
+      if hasattr(other, '__array__') and not isinstance(other, torch.Tensor):
+        other_tensor = torch.from_numpy(other.__array__()).to(self.torch_tensor.device)
+      else:
+        other_tensor = torch.tensor(other, device=self.torch_tensor.device, dtype=self.torch_tensor.dtype)
+      return TorchArrayWrapper(self.torch_tensor * other_tensor)
   
   def __rmul__(self, other):
     """Right multiplication operator."""
@@ -395,7 +416,14 @@ class TorchArrayWrapper:
     """Division operator."""
     if isinstance(other, TorchArrayWrapper):
       return TorchArrayWrapper(self.torch_tensor / other.torch_tensor)
-    return TorchArrayWrapper(self.torch_tensor / other)
+    elif isinstance(other, torch.Tensor):
+      return TorchArrayWrapper(self.torch_tensor / other)
+    else:
+      if hasattr(other, '__array__') and not isinstance(other, torch.Tensor):
+        other_tensor = torch.from_numpy(other.__array__()).to(self.torch_tensor.device)
+      else:
+        other_tensor = torch.tensor(other, device=self.torch_tensor.device, dtype=self.torch_tensor.dtype)
+      return TorchArrayWrapper(self.torch_tensor / other_tensor)
   
   def __rtruediv__(self, other):
     """Right division operator."""

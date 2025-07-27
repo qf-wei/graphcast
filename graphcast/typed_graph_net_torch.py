@@ -109,7 +109,10 @@ class GraphNetwork(nn.Module):
         if features.ndim == 1:
           return features.unsqueeze(0).expand(sum_n_edge, -1)
         elif features.ndim == 2:
-          return features.expand(sum_n_edge, -1)
+          batch_size = features.shape[0]
+          feature_dim = features.shape[1]
+          edges_per_batch = sum_n_edge // batch_size
+          return features.unsqueeze(1).expand(batch_size, edges_per_batch, feature_dim).reshape(sum_n_edge, feature_dim)
         else:
           return features.repeat_interleave(n_edge, dim=0)[:sum_n_edge]
     
@@ -164,7 +167,10 @@ class GraphNetwork(nn.Module):
         if features.ndim == 1:
           return features.unsqueeze(0).expand(sum_n_node, -1)
         elif features.ndim == 2:
-          return features.expand(sum_n_node, -1)
+          batch_size = features.shape[0]
+          feature_dim = features.shape[1]
+          nodes_per_batch = sum_n_node // batch_size
+          return features.unsqueeze(1).expand(batch_size, nodes_per_batch, feature_dim).reshape(sum_n_node, feature_dim)
         else:
           return features.repeat_interleave(n_node, dim=0)[:sum_n_node]
     

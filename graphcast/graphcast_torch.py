@@ -337,3 +337,10 @@ class GraphCast(nn.Module):
       total_loss = torch.tensor(0.0, requires_grad=True)
     
     return total_loss, xarray_torch.Dataset(diagnostics)
+  
+  def loss_and_predictions(self, inputs: xarray.Dataset, targets: xarray.Dataset, 
+                          forcings: xarray.Dataset) -> Tuple[Tuple[torch.Tensor, xarray.Dataset], xarray.Dataset]:
+    """Compute loss and return predictions."""
+    predictions = self.forward(inputs, targets, forcings)
+    loss, diagnostics = self.loss(inputs, targets, forcings)
+    return (loss, diagnostics), predictions
