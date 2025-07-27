@@ -153,11 +153,28 @@ def make_mlp_with_norm_conditioning(
         for arg in args:
           if isinstance(arg, dict):
             if arg:  # Check if dict is not empty
-              tensor_args.append(torch.cat(list(arg.values()), dim=-1))
+              dict_tensor = torch.cat(list(arg.values()), dim=-1)
+              tensor_args.append(dict_tensor)
           else:
             tensor_args.append(arg)
+        
         if tensor_args:
-          x = torch.cat(tensor_args, dim=-1)
+          max_dims = max(t.ndim for t in tensor_args)
+          normalized_args = []
+          for i, t in enumerate(tensor_args):
+            if t.ndim == 1 and max_dims == 2:
+              feature_sizes = [arg.shape[-1] for arg in tensor_args if arg.ndim == 2]
+              if feature_sizes:
+                target_feature_size = feature_sizes[0]
+                t = t.unsqueeze(-1).expand(-1, target_feature_size)
+              else:
+                while t.ndim < max_dims:
+                  t = t.unsqueeze(-1)
+            else:
+              while t.ndim < max_dims:
+                t = t.unsqueeze(0)
+            normalized_args.append(t)
+          x = torch.cat(normalized_args, dim=-1)
         else:
           x = torch.zeros(1, 1)  # Dummy tensor
         norm_conditioning = None
@@ -166,11 +183,28 @@ def make_mlp_with_norm_conditioning(
         for arg in args[:-1]:
           if isinstance(arg, dict):
             if arg:  # Check if dict is not empty
-              tensor_args.append(torch.cat(list(arg.values()), dim=-1))
+              dict_tensor = torch.cat(list(arg.values()), dim=-1)
+              tensor_args.append(dict_tensor)
           else:
             tensor_args.append(arg)
+        
         if tensor_args:
-          x = torch.cat(tensor_args, dim=-1)
+          max_dims = max(t.ndim for t in tensor_args)
+          normalized_args = []
+          for i, t in enumerate(tensor_args):
+            if t.ndim == 1 and max_dims == 2:
+              feature_sizes = [arg.shape[-1] for arg in tensor_args if arg.ndim == 2]
+              if feature_sizes:
+                target_feature_size = feature_sizes[0]
+                t = t.unsqueeze(-1).expand(-1, target_feature_size)
+              else:
+                while t.ndim < max_dims:
+                  t = t.unsqueeze(-1)
+            else:
+              while t.ndim < max_dims:
+                t = t.unsqueeze(0)
+            normalized_args.append(t)
+          x = torch.cat(normalized_args, dim=-1)
         else:
           x = torch.zeros(1, 1)  # Dummy tensor
         norm_conditioning = args[-1]

@@ -103,10 +103,15 @@ class GraphNetwork(nn.Module):
     
     def repeat_global_features(features):
       if isinstance(features, dict):
-        return {k: v.repeat_interleave(n_edge, dim=0)[:sum_n_edge] 
+        return {k: v.unsqueeze(0).expand(sum_n_edge, -1) 
                 for k, v in features.items()}
       else:
-        return features.repeat_interleave(n_edge, dim=0)[:sum_n_edge]
+        if features.ndim == 1:
+          return features.unsqueeze(0).expand(sum_n_edge, -1)
+        elif features.ndim == 2:
+          return features.expand(sum_n_edge, -1)
+        else:
+          return features.repeat_interleave(n_edge, dim=0)[:sum_n_edge]
     
     global_features = repeat_global_features(graph.context.features)
     new_features = edge_fn(edge_set.features, sent_attributes, received_attributes, global_features)
@@ -153,10 +158,15 @@ class GraphNetwork(nn.Module):
     
     def repeat_global_features(features):
       if isinstance(features, dict):
-        return {k: v.repeat_interleave(n_node, dim=0)[:sum_n_node] 
+        return {k: v.unsqueeze(0).expand(sum_n_node, -1) 
                 for k, v in features.items()}
       else:
-        return features.repeat_interleave(n_node, dim=0)[:sum_n_node]
+        if features.ndim == 1:
+          return features.unsqueeze(0).expand(sum_n_node, -1)
+        elif features.ndim == 2:
+          return features.expand(sum_n_node, -1)
+        else:
+          return features.repeat_interleave(n_node, dim=0)[:sum_n_node]
     
     global_features = repeat_global_features(graph.context.features)
     new_features = node_fn(node_set.features, sent_features, received_features, global_features)

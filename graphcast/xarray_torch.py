@@ -281,10 +281,21 @@ class TorchArrayWrapper:
     """Handle numpy array functions by converting to numpy, applying function, and converting back."""
     import numpy as np
     
+    if func == np.concatenate:
+      torch_arrays = []
+      for arg in args[0]:  # args[0] is the sequence of arrays to concatenate
+        if isinstance(arg, TorchArrayWrapper):
+          torch_arrays.append(arg.torch_tensor)
+        else:
+          torch_arrays.append(torch.from_numpy(np.asarray(arg)))
+      axis = kwargs.get('axis', 0)
+      result_tensor = torch.cat(torch_arrays, dim=axis)
+      return TorchArrayWrapper(result_tensor)
+    
     numpy_args = []
     for arg in args:
       if isinstance(arg, TorchArrayWrapper):
-        numpy_args.append(arg.__array__())
+        numpy_args.append(arg.torch_tensor.detach().cpu().numpy())
       else:
         numpy_args.append(arg)
     
@@ -338,6 +349,57 @@ class TorchArrayWrapper:
     """Make TorchArrayWrapper subscriptable for xarray operations."""
     result = self.torch_tensor[key]
     return TorchArrayWrapper(result)
+  
+  def transpose(self, axes=None):
+    """Transpose the tensor."""
+    if axes is None:
+      axes = list(range(self.torch_tensor.ndim))[::-1]
+    elif isinstance(axes, (list, tuple)):
+      axes = list(axes)
+    else:
+      axes = [axes]
+    
+    return TorchArrayWrapper(self.torch_tensor.permute(*axes))
+  
+  def __add__(self, other):
+    """Addition operator."""
+    if isinstance(other, TorchArrayWrapper):
+      return TorchArrayWrapper(self.torch_tensor + other.torch_tensor)
+    return TorchArrayWrapper(self.torch_tensor + other)
+  
+  def __radd__(self, other):
+    """Right addition operator."""
+    return TorchArrayWrapper(other + self.torch_tensor)
+  
+  def __sub__(self, other):
+    """Subtraction operator."""
+    if isinstance(other, TorchArrayWrapper):
+      return TorchArrayWrapper(self.torch_tensor - other.torch_tensor)
+    return TorchArrayWrapper(self.torch_tensor - other)
+  
+  def __rsub__(self, other):
+    """Right subtraction operator."""
+    return TorchArrayWrapper(other - self.torch_tensor)
+  
+  def __mul__(self, other):
+    """Multiplication operator."""
+    if isinstance(other, TorchArrayWrapper):
+      return TorchArrayWrapper(self.torch_tensor * other.torch_tensor)
+    return TorchArrayWrapper(self.torch_tensor * other)
+  
+  def __rmul__(self, other):
+    """Right multiplication operator."""
+    return TorchArrayWrapper(other * self.torch_tensor)
+  
+  def __truediv__(self, other):
+    """Division operator."""
+    if isinstance(other, TorchArrayWrapper):
+      return TorchArrayWrapper(self.torch_tensor / other.torch_tensor)
+    return TorchArrayWrapper(self.torch_tensor / other)
+  
+  def __rtruediv__(self, other):
+    """Right division operator."""
+    return TorchArrayWrapper(other / self.torch_tensor)
 
   def __array__(self, dtype=None):
     numpy_array = self.torch_tensor.detach().cpu().numpy()

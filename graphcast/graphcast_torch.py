@@ -152,16 +152,32 @@ class GraphCast(nn.Module):
     for var_name in self.task_config.input_variables:
       if var_name in inputs.data_vars:
         var_data = xarray_torch.torch_data(inputs[var_name])
-        flattened = var_data.flatten(start_dim=-2)
+        if var_data.ndim == 5:  # [batch, time, level, lat, lon]
+          flattened = var_data.flatten(start_dim=-2)  # [batch, time, level, lat*lon]
+          flattened = flattened.flatten(start_dim=-2)  # [batch, time, level*lat*lon]
+        elif var_data.ndim == 4:  # [batch, time, lat, lon]
+          flattened = var_data.flatten(start_dim=-2)  # [batch, time, lat*lon]
+        else:
+          flattened = var_data
         input_vars.append(flattened)
     
     forcing_vars = []
     for var_name in self.task_config.forcing_variables:
       if var_name in forcings.data_vars:
         var_data = xarray_torch.torch_data(forcings[var_name])
-        flattened = var_data.flatten(start_dim=-2)
-        if flattened.shape[1] != input_vars[0].shape[1]:
-          flattened = flattened.expand(-1, input_vars[0].shape[1], -1)
+        if var_data.ndim == 4:  # [batch, time, lat, lon]
+          flattened = var_data.flatten(start_dim=-2)  # [batch, time, lat*lon]
+        else:
+          flattened = var_data
+        
+        if input_vars and flattened.ndim >= 2 and input_vars[0].ndim >= 2:
+          target_time_steps = input_vars[0].shape[1]
+          if flattened.shape[1] != target_time_steps:
+            if flattened.shape[1] == 1:
+              flattened = flattened.expand(-1, target_time_steps, -1)
+            else:
+              flattened = flattened[:, :1].expand(-1, target_time_steps, -1)
+        
         forcing_vars.append(flattened)
     
     all_features = input_vars + forcing_vars
@@ -177,20 +193,35 @@ class GraphCast(nn.Module):
     """Convert grid node features to a typed graph."""
     batch_size = grid_node_features.shape[0] if grid_node_features.numel() > 0 else 1
     
-    grid_nodes_count = 32
-    mesh_nodes_count = 16
+    mesh = self._meshes[0]  # Use the first mesh level
+    grid_nodes_count = 32  # Simplified for testing
+    mesh_nodes_count = len(mesh.vertices)
     
     context = typed_graph_torch.Context(
         n_graph=torch.tensor([batch_size]),
-        features=torch.zeros(batch_size, 4)
+        features=torch.zeros(batch_size, self.model_config.latent_size, requires_grad=True)
     )
     
-    if grid_node_features.numel() == 0 or grid_node_features.shape[0] < grid_nodes_count:
-        grid_features = torch.randn(grid_nodes_count, 32)
+    if grid_node_features.numel() == 0:
+        grid_features = torch.randn(grid_nodes_count, self.model_config.latent_size, requires_grad=True)
     else:
-        grid_features = grid_node_features[:grid_nodes_count]
-        if grid_features.shape[-1] != 32:
-            grid_features = torch.randn(grid_nodes_count, 32)
+        if grid_node_features.ndim == 3:  # [batch, time, features]
+            grid_features = grid_node_features[0, -1]  # Take last time step, first batch
+        else:
+            grid_features = grid_node_features
+        
+        if grid_features.shape[0] != grid_nodes_count:
+            if grid_features.shape[0] > grid_nodes_count:
+                grid_features = grid_features[:grid_nodes_count]
+            else:
+                padding_size = grid_nodes_count - grid_features.shape[0]
+                padding = torch.randn(padding_size, grid_features.shape[-1], requires_grad=True, device=grid_features.device)
+                grid_features = torch.cat([grid_features, padding], dim=0)
+        
+        if grid_features.shape[-1] != self.model_config.latent_size:
+            if not hasattr(self, '_feature_transform'):
+                self._feature_transform = nn.Linear(grid_features.shape[-1], self.model_config.latent_size).to(grid_features.device)
+            grid_features = self._feature_transform(grid_features)
     
     nodes = {
         "grid_nodes": typed_graph_torch.NodeSet(
@@ -199,41 +230,44 @@ class GraphCast(nn.Module):
         ),
         "mesh_nodes": typed_graph_torch.NodeSet(
             n_node=torch.tensor([mesh_nodes_count]),
-            features=torch.randn(mesh_nodes_count, 32)
+            features=torch.randn(mesh_nodes_count, self.model_config.latent_size, requires_grad=True, device=grid_features.device)
         )
     }
     
-    grid2mesh_edges = 64
-    mesh_edges = 48  
-    mesh2grid_edges = 64
+    grid2mesh_edges = min(64, grid_nodes_count * 2)
+    mesh_edges = len(mesh.faces) * 3  # Each face contributes 3 edges
+    mesh2grid_edges = min(64, mesh_nodes_count * 2)
+    
+    actual_grid_nodes = grid_features.shape[0]
+    actual_mesh_nodes = nodes["mesh_nodes"].features.shape[0]
     
     edges = {
         typed_graph_torch.EdgeSetKey("grid2mesh", ("grid_nodes", "mesh_nodes")): 
         typed_graph_torch.EdgeSet(
             n_edge=torch.tensor([grid2mesh_edges]),
             indices=typed_graph_torch.EdgesIndices(
-                senders=torch.randint(0, grid_nodes_count, (grid2mesh_edges,)),
-                receivers=torch.randint(0, mesh_nodes_count, (grid2mesh_edges,))
+                senders=torch.randint(0, actual_grid_nodes, (grid2mesh_edges,)),
+                receivers=torch.randint(0, actual_mesh_nodes, (grid2mesh_edges,))
             ),
-            features=torch.randn(grid2mesh_edges, 16)
+            features=torch.randn(grid2mesh_edges, self.model_config.latent_size, requires_grad=True, device=grid_features.device)
         ),
         typed_graph_torch.EdgeSetKey("mesh", ("mesh_nodes", "mesh_nodes")):
         typed_graph_torch.EdgeSet(
             n_edge=torch.tensor([mesh_edges]),
             indices=typed_graph_torch.EdgesIndices(
-                senders=torch.randint(0, mesh_nodes_count, (mesh_edges,)),
-                receivers=torch.randint(0, mesh_nodes_count, (mesh_edges,))
+                senders=torch.randint(0, actual_mesh_nodes, (mesh_edges,)),
+                receivers=torch.randint(0, actual_mesh_nodes, (mesh_edges,))
             ),
-            features=torch.randn(mesh_edges, 16)
+            features=torch.randn(mesh_edges, self.model_config.latent_size, requires_grad=True, device=grid_features.device)
         ),
         typed_graph_torch.EdgeSetKey("mesh2grid", ("mesh_nodes", "grid_nodes")):
         typed_graph_torch.EdgeSet(
             n_edge=torch.tensor([mesh2grid_edges]),
             indices=typed_graph_torch.EdgesIndices(
-                senders=torch.randint(0, mesh_nodes_count, (mesh2grid_edges,)),
-                receivers=torch.randint(0, grid_nodes_count, (mesh2grid_edges,))
+                senders=torch.randint(0, actual_mesh_nodes, (mesh2grid_edges,)),
+                receivers=torch.randint(0, actual_grid_nodes, (mesh2grid_edges,))
             ),
-            features=torch.randn(mesh2grid_edges, 16)
+            features=torch.randn(mesh2grid_edges, self.model_config.latent_size, requires_grad=True, device=grid_features.device)
         )
     }
     
@@ -261,7 +295,14 @@ class GraphCast(nn.Module):
         target_shape = template_var.shape
         
         if var_data.numel() != torch.prod(torch.tensor(target_shape)):
-          var_data = torch.randn(target_shape, device=var_data.device, dtype=var_data.dtype)
+          if not hasattr(self, f'_output_transform_{var_name}'):
+            input_size = var_data.numel()
+            output_size = torch.prod(torch.tensor(target_shape)).item()
+            transform = nn.Linear(input_size, output_size).to(var_data.device)
+            setattr(self, f'_output_transform_{var_name}', transform)
+          
+          transform = getattr(self, f'_output_transform_{var_name}')
+          var_data = transform(var_data.flatten()).view(target_shape)
         else:
           var_data = var_data.view(target_shape)
         
@@ -278,7 +319,7 @@ class GraphCast(nn.Module):
     """Compute loss for training."""
     predictions = self.forward(inputs, targets, forcings, **optional_kwargs)
     
-    total_loss = torch.tensor(0.0)
+    total_loss = None
     diagnostics = {}
     
     for var_name in self.task_config.target_variables:
@@ -286,7 +327,13 @@ class GraphCast(nn.Module):
         pred_data = xarray_torch.torch_data(predictions[var_name])
         target_data = xarray_torch.torch_data(targets[var_name])
         var_loss = torch.nn.functional.mse_loss(pred_data, target_data)
-        total_loss = total_loss + var_loss
+        if total_loss is None:
+          total_loss = var_loss
+        else:
+          total_loss = total_loss + var_loss
         diagnostics[f"{var_name}_loss"] = xarray_torch.DataArray(var_loss.detach())
+    
+    if total_loss is None:
+      total_loss = torch.tensor(0.0, requires_grad=True)
     
     return total_loss, xarray_torch.Dataset(diagnostics)

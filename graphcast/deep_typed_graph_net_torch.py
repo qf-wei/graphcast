@@ -125,14 +125,50 @@ class DeepTypedGraphNet(nn.Module):
   def _build_networks(self, input_graph: typed_graph_torch.TypedGraph, 
                       global_norm_conditioning: Optional[torch.Tensor] = None):
     """Build the networks based on the input graph structure."""
-    self.embedder_network = self._get_embedder_network()
-    self.processor_networks = nn.ModuleList(self._get_processor_networks())
-    self.decoder_network = self._get_decoder_network()
+    embedder_network = self._get_embedder_network()
+    processor_networks = self._get_processor_networks()
+    decoder_network = self._get_decoder_network()
     
-    if self.embedder_network is not None and hasattr(self.embedder_network, 'parameters'):
-      self.add_module('embedder_network', self.embedder_network)
-    if self.decoder_network is not None and hasattr(self.decoder_network, 'parameters'):
-      self.add_module('decoder_network', self.decoder_network)
+    if embedder_network is not None:
+      if isinstance(embedder_network, nn.Module):
+        self.embedder_network = embedder_network
+      else:
+        class EmbedderWrapper(nn.Module):
+          def __init__(self, func):
+            super().__init__()
+            self.func = func
+          def forward(self, x):
+            return self.func(x)
+        self.embedder_network = EmbedderWrapper(embedder_network)
+    else:
+      self.embedder_network = None
+      
+    self.processor_networks = nn.ModuleList()
+    for i, processor in enumerate(processor_networks):
+      if isinstance(processor, nn.Module):
+        self.processor_networks.append(processor)
+      else:
+        class ProcessorWrapper(nn.Module):
+          def __init__(self, func):
+            super().__init__()
+            self.func = func
+          def forward(self, x):
+            return self.func(x)
+        self.processor_networks.append(ProcessorWrapper(processor))
+    
+    if decoder_network is not None:
+      if isinstance(decoder_network, nn.Module):
+        self.decoder_network = decoder_network
+      else:
+        class DecoderWrapper(nn.Module):
+          def __init__(self, func):
+            super().__init__()
+            self.func = func
+          def forward(self, x):
+            return self.func(x)
+        self.decoder_network = DecoderWrapper(decoder_network)
+    else:
+      self.decoder_network = None
 
   def _embed(self, input_graph: typed_graph_torch.TypedGraph,
              global_norm_conditioning: Optional[torch.Tensor] = None) -> typed_graph_torch.TypedGraph:
@@ -239,7 +275,17 @@ class DeepTypedGraphNet(nn.Module):
 
   def _make_embed_fn(self, latent_size: int, name: str) -> Callable:
     """Makes an embedding function."""
-    return nn.LazyLinear(latent_size)
+    class EmbedFn(nn.Module):
+      def __init__(self, output_size):
+        super().__init__()
+        self.linear = nn.LazyLinear(output_size)
+      
+      def forward(self, x):
+        if isinstance(x, dict):
+          x = torch.cat(list(x.values()), dim=-1)
+        return self.linear(x)
+    
+    return EmbedFn(latent_size)
 
   def _make_mlp_with_norm_conditioning(
       self, latent_size: int, name: str) -> Callable:
