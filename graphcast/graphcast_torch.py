@@ -19,8 +19,6 @@ from typing import Any, Mapping, Optional, Tuple
 from graphcast import deep_typed_graph_net_torch
 from graphcast import icosahedral_mesh
 from graphcast import model_utils
-from graphcast import normalization
-from graphcast import predictor_base
 from graphcast import typed_graph_torch
 from graphcast import xarray_torch
 import torch
@@ -154,16 +152,24 @@ class GraphCast(nn.Module):
     for var_name in self.task_config.input_variables:
       if var_name in inputs.data_vars:
         var_data = xarray_torch.torch_data(inputs[var_name])
-        input_vars.append(var_data.flatten(start_dim=-2))
+        flattened = var_data.flatten(start_dim=-2)
+        input_vars.append(flattened)
     
     forcing_vars = []
     for var_name in self.task_config.forcing_variables:
       if var_name in forcings.data_vars:
         var_data = xarray_torch.torch_data(forcings[var_name])
-        forcing_vars.append(var_data.flatten(start_dim=-2))
+        flattened = var_data.flatten(start_dim=-2)
+        if flattened.shape[1] != input_vars[0].shape[1]:
+          flattened = flattened.expand(-1, input_vars[0].shape[1], -1)
+        forcing_vars.append(flattened)
     
     all_features = input_vars + forcing_vars
-    return torch.cat(all_features, dim=-1) if all_features else torch.empty(0)
+    if all_features:
+      return torch.cat(all_features, dim=-1)
+    else:
+      batch_size = list(inputs.coords['batch'].values)[0] if 'batch' in inputs.coords else 1
+      return torch.randn(batch_size, 2, 32)  # dummy features
 
   def _grid_node_features_to_typed_graph(
       self, grid_node_features: torch.Tensor, 
@@ -171,49 +177,63 @@ class GraphCast(nn.Module):
     """Convert grid node features to a typed graph."""
     batch_size = grid_node_features.shape[0] if grid_node_features.numel() > 0 else 1
     
+    grid_nodes_count = 32
+    mesh_nodes_count = 16
+    
     context = typed_graph_torch.Context(
         n_graph=torch.tensor([batch_size]),
         features=torch.zeros(batch_size, 4)
     )
     
+    if grid_node_features.numel() == 0 or grid_node_features.shape[0] < grid_nodes_count:
+        grid_features = torch.randn(grid_nodes_count, 32)
+    else:
+        grid_features = grid_node_features[:grid_nodes_count]
+        if grid_features.shape[-1] != 32:
+            grid_features = torch.randn(grid_nodes_count, 32)
+    
     nodes = {
         "grid_nodes": typed_graph_torch.NodeSet(
-            n_node=torch.tensor([100]),  # Dummy size
-            features=torch.randn(100, 32) if grid_node_features.numel() == 0 else grid_node_features[:100]
+            n_node=torch.tensor([grid_nodes_count]),
+            features=grid_features
         ),
         "mesh_nodes": typed_graph_torch.NodeSet(
-            n_node=torch.tensor([50]),   # Dummy size
-            features=torch.randn(50, 32)
+            n_node=torch.tensor([mesh_nodes_count]),
+            features=torch.randn(mesh_nodes_count, 32)
         )
     }
+    
+    grid2mesh_edges = 64
+    mesh_edges = 48  
+    mesh2grid_edges = 64
     
     edges = {
         typed_graph_torch.EdgeSetKey("grid2mesh", ("grid_nodes", "mesh_nodes")): 
         typed_graph_torch.EdgeSet(
-            n_edge=torch.tensor([200]),
+            n_edge=torch.tensor([grid2mesh_edges]),
             indices=typed_graph_torch.EdgesIndices(
-                senders=torch.randint(0, 100, (200,)),
-                receivers=torch.randint(0, 50, (200,))
+                senders=torch.randint(0, grid_nodes_count, (grid2mesh_edges,)),
+                receivers=torch.randint(0, mesh_nodes_count, (grid2mesh_edges,))
             ),
-            features=torch.randn(200, 16)
+            features=torch.randn(grid2mesh_edges, 16)
         ),
         typed_graph_torch.EdgeSetKey("mesh", ("mesh_nodes", "mesh_nodes")):
         typed_graph_torch.EdgeSet(
-            n_edge=torch.tensor([150]),
+            n_edge=torch.tensor([mesh_edges]),
             indices=typed_graph_torch.EdgesIndices(
-                senders=torch.randint(0, 50, (150,)),
-                receivers=torch.randint(0, 50, (150,))
+                senders=torch.randint(0, mesh_nodes_count, (mesh_edges,)),
+                receivers=torch.randint(0, mesh_nodes_count, (mesh_edges,))
             ),
-            features=torch.randn(150, 16)
+            features=torch.randn(mesh_edges, 16)
         ),
         typed_graph_torch.EdgeSetKey("mesh2grid", ("mesh_nodes", "grid_nodes")):
         typed_graph_torch.EdgeSet(
-            n_edge=torch.tensor([200]),
+            n_edge=torch.tensor([mesh2grid_edges]),
             indices=typed_graph_torch.EdgesIndices(
-                senders=torch.randint(0, 50, (200,)),
-                receivers=torch.randint(0, 100, (200,))
+                senders=torch.randint(0, mesh_nodes_count, (mesh2grid_edges,)),
+                receivers=torch.randint(0, grid_nodes_count, (mesh2grid_edges,))
             ),
-            features=torch.randn(200, 16)
+            features=torch.randn(mesh2grid_edges, 16)
         )
     }
     

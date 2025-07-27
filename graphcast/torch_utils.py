@@ -43,7 +43,11 @@ def segment_sum(data: torch.Tensor, segment_ids: torch.Tensor, num_segments: int
     result_shape = (num_segments,) + data.shape[1:]
     result = torch.zeros(result_shape, dtype=data.dtype, device=data.device)
   
-  result.scatter_add_(0, segment_ids.unsqueeze(-1).expand_as(data), data)
+  if data.dim() == 1:
+    result.scatter_add_(0, segment_ids, data)
+  else:
+    expanded_ids = segment_ids.view(-1, *([1] * (data.dim() - 1))).expand_as(data)
+    result.scatter_add_(0, expanded_ids, data)
   return result
 
 
@@ -138,7 +142,33 @@ def make_mlp_with_norm_conditioning(
       else:
         self.norm_conditioning = None
     
-    def forward(self, x: torch.Tensor, norm_conditioning: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, *args) -> torch.Tensor:
+      if len(args) == 1:
+        x = args[0]
+        norm_conditioning = None
+      elif len(args) == 2:
+        x, norm_conditioning = args
+      elif len(args) == 4:
+        tensor_args = []
+        for arg in args:
+          if isinstance(arg, dict):
+            tensor_args.append(torch.cat(list(arg.values()), dim=-1))
+          else:
+            tensor_args.append(arg)
+        x = torch.cat(tensor_args, dim=-1)
+        norm_conditioning = None
+      elif len(args) == 5:
+        tensor_args = []
+        for arg in args[:-1]:
+          if isinstance(arg, dict):
+            tensor_args.append(torch.cat(list(arg.values()), dim=-1))
+          else:
+            tensor_args.append(arg)
+        x = torch.cat(tensor_args, dim=-1)
+        norm_conditioning = args[-1]
+      else:
+        raise ValueError(f"Unexpected number of arguments: {len(args)}")
+        
       x = self.mlp(x)
       if self.norm_conditioning is not None and norm_conditioning is not None:
         x = self.norm_conditioning(x, norm_conditioning)

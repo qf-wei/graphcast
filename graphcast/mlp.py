@@ -33,16 +33,22 @@ class LinearNormConditioning(nn.Module):
 
   def forward(self, inputs: torch.Tensor, norm_conditioning: torch.Tensor):
     feature_size = inputs.shape[-1]
+    conditioning_size = norm_conditioning.shape[-1]
     
-    if self.conditional_linear is None:
-      self.conditional_linear = nn.Linear(
-          norm_conditioning.shape[-1], 
+    layer_key = (conditioning_size, feature_size)
+    
+    if not hasattr(self, '_linear_layers'):
+      self._linear_layers = {}
+    
+    if layer_key not in self._linear_layers:
+      self._linear_layers[layer_key] = nn.Linear(
+          conditioning_size, 
           2 * feature_size
       ).to(inputs.device)
-      nn.init.normal_(self.conditional_linear.weight, std=1e-8)
-      nn.init.zeros_(self.conditional_linear.bias)
+      nn.init.normal_(self._linear_layers[layer_key].weight, std=0.1)
+      nn.init.zeros_(self._linear_layers[layer_key].bias)
     
-    conditional_scale_offset = self.conditional_linear(norm_conditioning)
+    conditional_scale_offset = self._linear_layers[layer_key](norm_conditioning)
     scale_minus_one, offset = torch.split(conditional_scale_offset, feature_size, dim=-1)
     scale = scale_minus_one + 1.0
     return inputs * scale + offset
