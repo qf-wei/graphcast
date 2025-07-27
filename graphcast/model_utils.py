@@ -13,15 +13,16 @@
 # limitations under the License.
 """Utilities for building models."""
 
-from typing import Any, Mapping, Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple, Union
 
-import jax.numpy as jnp
+import torch
 import numpy as np
 from scipy.spatial import transform
 import xarray
 
 NumpyInterface = Any
 TransformInterface = Any
+TensorInterface = Union[np.ndarray, torch.Tensor]
 
 
 def get_graph_spatial_features(
@@ -773,10 +774,10 @@ def stacked_to_dataset(
 
 
 def fourier_features(
-    values: jnp.ndarray,
+    values: Union[np.ndarray, torch.Tensor],
     base_period: float,
     num_frequencies: int,
-    ) -> jnp.ndarray:
+    ) -> Union[np.ndarray, torch.Tensor]:
   """Maps values to sin/cos features for a range of frequencies.
 
   Args:
@@ -796,10 +797,19 @@ def fourier_features(
     frequency.
   """
   frequencies = np.arange(1, num_frequencies + 1) / base_period
-  angular_frequencies = jnp.array(2 * np.pi * frequencies, dtype=values.dtype)
-  values_times_angular_freqs = values[..., None] * angular_frequencies
-  return jnp.concatenate(
-      [jnp.cos(values_times_angular_freqs),
-       jnp.sin(values_times_angular_freqs)],
-      axis=-1)
+  
+  if torch.is_tensor(values):
+    angular_frequencies = torch.tensor(2 * np.pi * frequencies, dtype=values.dtype, device=values.device)
+    values_times_angular_freqs = values[..., None] * angular_frequencies
+    return torch.cat(
+        [torch.cos(values_times_angular_freqs),
+         torch.sin(values_times_angular_freqs)],
+        dim=-1)
+  else:
+    angular_frequencies = np.array(2 * np.pi * frequencies, dtype=values.dtype)
+    values_times_angular_freqs = values[..., None] * angular_frequencies
+    return np.concatenate(
+        [np.cos(values_times_angular_freqs),
+         np.sin(values_times_angular_freqs)],
+        axis=-1)
 

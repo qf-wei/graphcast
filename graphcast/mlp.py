@@ -13,15 +13,12 @@
 # limitations under the License.
 """Constructors for MLPs."""
 
-import haiku as hk
-import jax
-import jax.numpy as jnp
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 
-# TODO(aelkadi): Move the mlp factory here from `deep_typed_graph_net.py`.
-
-
-class LinearNormConditioning(hk.Module):
+class LinearNormConditioning(nn.Module):
   """Module for norm conditioning.
 
   Conditions the normalization of "inputs" by applying a linear layer to the
@@ -30,16 +27,22 @@ class LinearNormConditioning(hk.Module):
   """
 
   def __init__(self, name="norm_conditioning"):
-    super().__init__(name=name)
+    super().__init__()
+    self.name = name
+    self.conditional_linear = None
 
-  def __call__(self, inputs: jax.Array, norm_conditioning: jax.Array):
-
+  def forward(self, inputs: torch.Tensor, norm_conditioning: torch.Tensor):
     feature_size = inputs.shape[-1]
-    conditional_linear_layer = hk.Linear(
-        output_size=2 * feature_size,
-        w_init=hk.initializers.TruncatedNormal(stddev=1e-8),
-    )
-    conditional_scale_offset = conditional_linear_layer(norm_conditioning)
-    scale_minus_one, offset = jnp.split(conditional_scale_offset, 2, axis=-1)
-    scale = scale_minus_one + 1.
+    
+    if self.conditional_linear is None:
+      self.conditional_linear = nn.Linear(
+          norm_conditioning.shape[-1], 
+          2 * feature_size
+      ).to(inputs.device)
+      nn.init.normal_(self.conditional_linear.weight, std=1e-8)
+      nn.init.zeros_(self.conditional_linear.bias)
+    
+    conditional_scale_offset = self.conditional_linear(norm_conditioning)
+    scale_minus_one, offset = torch.split(conditional_scale_offset, feature_size, dim=-1)
+    scale = scale_minus_one + 1.0
     return inputs * scale + offset
