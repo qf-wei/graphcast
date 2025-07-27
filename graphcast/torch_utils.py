@@ -152,19 +152,27 @@ def make_mlp_with_norm_conditioning(
         tensor_args = []
         for arg in args:
           if isinstance(arg, dict):
-            tensor_args.append(torch.cat(list(arg.values()), dim=-1))
+            if arg:  # Check if dict is not empty
+              tensor_args.append(torch.cat(list(arg.values()), dim=-1))
           else:
             tensor_args.append(arg)
-        x = torch.cat(tensor_args, dim=-1)
+        if tensor_args:
+          x = torch.cat(tensor_args, dim=-1)
+        else:
+          x = torch.zeros(1, 1)  # Dummy tensor
         norm_conditioning = None
       elif len(args) == 5:
         tensor_args = []
         for arg in args[:-1]:
           if isinstance(arg, dict):
-            tensor_args.append(torch.cat(list(arg.values()), dim=-1))
+            if arg:  # Check if dict is not empty
+              tensor_args.append(torch.cat(list(arg.values()), dim=-1))
           else:
             tensor_args.append(arg)
-        x = torch.cat(tensor_args, dim=-1)
+        if tensor_args:
+          x = torch.cat(tensor_args, dim=-1)
+        else:
+          x = torch.zeros(1, 1)  # Dummy tensor
         norm_conditioning = args[-1]
       else:
         raise ValueError(f"Unexpected number of arguments: {len(args)}")

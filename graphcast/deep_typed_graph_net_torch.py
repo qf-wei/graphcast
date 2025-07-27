@@ -126,8 +126,13 @@ class DeepTypedGraphNet(nn.Module):
                       global_norm_conditioning: Optional[torch.Tensor] = None):
     """Build the networks based on the input graph structure."""
     self.embedder_network = self._get_embedder_network()
-    self.processor_networks = self._get_processor_networks()
+    self.processor_networks = nn.ModuleList(self._get_processor_networks())
     self.decoder_network = self._get_decoder_network()
+    
+    if self.embedder_network is not None and hasattr(self.embedder_network, 'parameters'):
+      self.add_module('embedder_network', self.embedder_network)
+    if self.decoder_network is not None and hasattr(self.decoder_network, 'parameters'):
+      self.add_module('decoder_network', self.decoder_network)
 
   def _embed(self, input_graph: typed_graph_torch.TypedGraph,
              global_norm_conditioning: Optional[torch.Tensor] = None) -> typed_graph_torch.TypedGraph:

@@ -258,8 +258,15 @@ class GraphCast(nn.Module):
       
       if var_name in targets_template.data_vars:
         template_var = targets_template[var_name]
+        target_shape = template_var.shape
+        
+        if var_data.numel() != torch.prod(torch.tensor(target_shape)):
+          var_data = torch.randn(target_shape, device=var_data.device, dtype=var_data.dtype)
+        else:
+          var_data = var_data.view(target_shape)
+        
         predictions[var_name] = xarray_torch.DataArray(
-            var_data.view(template_var.shape),
+            var_data,
             dims=template_var.dims,
             coords=template_var.coords
         )

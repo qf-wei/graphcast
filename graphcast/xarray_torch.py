@@ -278,7 +278,23 @@ class TorchArrayWrapper:
       return NotImplemented
 
   def __array_function__(self, func, types, args, kwargs):
-    return NotImplemented
+    """Handle numpy array functions by converting to numpy, applying function, and converting back."""
+    import numpy as np
+    
+    numpy_args = []
+    for arg in args:
+      if isinstance(arg, TorchArrayWrapper):
+        numpy_args.append(arg.__array__())
+      else:
+        numpy_args.append(arg)
+    
+    result = func(*numpy_args, **kwargs)
+    
+    if isinstance(result, np.ndarray):
+      torch_result = torch.from_numpy(result)
+      return TorchArrayWrapper(torch_result)
+    else:
+      return result
 
   def __repr__(self):
     return f"TorchArrayWrapper({self.torch_tensor})"
@@ -289,7 +305,18 @@ class TorchArrayWrapper:
 
   @property
   def dtype(self):
-    return self.torch_tensor.dtype
+    torch_to_numpy_dtype = {
+        torch.float32: np.dtype(np.float32),
+        torch.float64: np.dtype(np.float64),
+        torch.int32: np.dtype(np.int32),
+        torch.int64: np.dtype(np.int64),
+        torch.bool: np.dtype(np.bool_),
+        torch.uint8: np.dtype(np.uint8),
+        torch.int8: np.dtype(np.int8),
+        torch.int16: np.dtype(np.int16),
+        torch.float16: np.dtype(np.float16),
+    }
+    return torch_to_numpy_dtype.get(self.torch_tensor.dtype, np.dtype(np.float32))
 
   @property
   def ndim(self):
@@ -307,8 +334,26 @@ class TorchArrayWrapper:
   def imag(self):
     return TorchArrayWrapper(self.torch_tensor.imag)
 
+  def __getitem__(self, key):
+    """Make TorchArrayWrapper subscriptable for xarray operations."""
+    result = self.torch_tensor[key]
+    return TorchArrayWrapper(result)
+
   def __array__(self, dtype=None):
-    return self.torch_tensor.detach().cpu().numpy().astype(dtype)
+    numpy_array = self.torch_tensor.detach().cpu().numpy()
+    if dtype is not None:
+      if hasattr(dtype, 'numpy_dtype'):
+        dtype = dtype.numpy_dtype
+      elif str(dtype).startswith('torch.'):
+        dtype_map = {
+          'torch.float32': np.float32,
+          'torch.float64': np.float64,
+          'torch.int32': np.int32,
+          'torch.int64': np.int64,
+        }
+        dtype = dtype_map.get(str(dtype), np.float32)
+      numpy_array = numpy_array.astype(dtype)
+    return numpy_array
 
 
 def apply_ufunc(
